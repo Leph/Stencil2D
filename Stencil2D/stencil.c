@@ -69,7 +69,10 @@ load(const char *filename) {
 #define OFFSET    (LINESIZE + 16)
 #define TOTALSIZE ( LINESIZE*( YDIM + 2*BORDER ) )
 
-#define YDIM_GPU 2048
+//#define YDIM_GPU (4096)
+#define YDIM_GPU (2048+1024+128+64)
+//#define COMPUTE_TIME
+//#define YDIM_GPU (4096)
 #define YDIM_CPU (YDIM - YDIM_GPU)
 #define TOTALSIZE_GPU ( LINESIZE*(YDIM_GPU + 2*BORDER) )
 #define GPU_OFFSET LINESIZE*YDIM_CPU
@@ -117,10 +120,13 @@ int main(int argc, char** argv)
   const unsigned int mem_size = TOTALSIZE*sizeof(float);
   const unsigned int mem_size_gpu = TOTALSIZE_GPU*sizeof(float);
 
+  float *h_refdata = NULL;
   float *h_idata = NULL;
   float *h_odata = NULL;
 
   struct timeval tv1,tv2;
+  struct timeval tvCPU1,tvCPU2;
+  struct timeval tvGPU1,tvGPU2;
 
   // Filter args
   //
@@ -141,6 +147,7 @@ int main(int argc, char** argv)
 
   // Allocation of input & output matrices
   //
+  h_refdata = malloc(mem_size);
   h_idata = malloc(mem_size);
   h_odata = malloc(mem_size);
 
@@ -149,7 +156,8 @@ int main(int argc, char** argv)
   srand(1234);
   for(unsigned int i = 0; i < TOTALSIZE; i++) {
     h_idata[i]=rand();
-    h_odata[i]=0.0;
+    h_refdata[i]=h_idata[i];
+    h_odata[i]=h_idata[i];
   }
 
   // Get list of OpenCL platforms detected
@@ -250,65 +258,135 @@ int main(int argc, char** argv)
 				 mem_size_gpu, h_odata+GPU_OFFSET, 0, NULL, NULL);
       check(err, "Failed to transfer input matrix!\n");
 
-      // Set the arguments to our compute kernel
-      //
-      err = 0;
-      err |= clSetKernelArg(kernel, 0, sizeof(cl_mem), &d_odata);
-      err |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &d_idata);
-      err |= clSetKernelArg(kernel, 2, sizeof(unsigned int), &line_size);
-      check(err, "Failed to set kernel arguments! %d\n", err);
-
       global[0] = XDIM;
       global[1] = YDIM_GPU/4;
       local[0] = 16; // Set workgroup size
       local[1] = 4;
 
-      int numIterations = 1;
+      int numIterations = 101;
 
       gettimeofday(&tv1, NULL);
       for(int i = 0; i<numIterations; i++) // Iterations are done inside the kernel
       {
+        // Set the arguments to our compute kernel
+        //
+      	err = 0;
+	if (i % 2 == 0) {
+		err |= clSetKernelArg(kernel, 0, sizeof(cl_mem), &d_odata);
+		err |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &d_idata);
+	}
+	else {
+		err |= clSetKernelArg(kernel, 0, sizeof(cl_mem), &d_idata);
+		err |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &d_odata);
+	}
+        err |= clSetKernelArg(kernel, 2, sizeof(unsigned int), &line_size);
+        check(err, "Failed to set kernel arguments! %d\n", err);
+
 	//Compute on GPU lower part
+      	gettimeofday(&tvGPU1, NULL);
 	err = clEnqueueNDRangeKernel(queue, kernel, 2, NULL, global, local, 0, NULL, NULL);
 	check(err, "Failed to execute kernel!\n");
 
-	//Compute on CPU upper part
-	stencil_cpu(h_odata + OFFSET, h_idata + OFFSET);
-
+#ifdef COMPUTE_TIME
 	// Wait for the command commands to get serviced before reading back results
 	clFinish(queue);
+      	gettimeofday(&tvGPU2, NULL);
+#endif
+	
+	//Compute on CPU upper part
+      	gettimeofday(&tvCPU1, NULL);
+	if (i % 2 == 1) {
+		stencil_cpu(h_idata + OFFSET, h_odata + OFFSET);
+	}
+	else {
+		stencil_cpu(h_odata + OFFSET, h_idata + OFFSET);
+	}
+      	gettimeofday(&tvCPU2, NULL);
+	
+#ifndef COMPUTE_TIME
+	// Wait for the command commands to get serviced before reading back results
+	clFinish(queue);
+      	gettimeofday(&tvGPU2, NULL);
+#endif
+
+	//Propagation des bords
+	if (i % 2 == 0) {
+		err = clEnqueueReadBuffer(queue, d_odata, CL_TRUE, (sizeof(float)*LINESIZE),
+					(sizeof(float)*LINESIZE), h_odata+GPU_OFFSET+LINESIZE, 0, NULL, NULL );
+		check(err, "Failed to read matrix! %d\n", err);
+		err = clEnqueueWriteBuffer(queue, d_odata, CL_TRUE, 0,
+					 (sizeof(float)*LINESIZE), h_odata+GPU_OFFSET, 0, NULL, NULL);
+		check(err, "Failed to write matrix!\n");
+	}
+	else {
+		err = clEnqueueReadBuffer(queue, d_idata, CL_TRUE, (sizeof(float)*LINESIZE),
+					(sizeof(float)*LINESIZE), h_idata+GPU_OFFSET+LINESIZE, 0, NULL, NULL );
+		check(err, "Failed to read matrix! %d\n", err);
+		err = clEnqueueWriteBuffer(queue, d_idata, CL_TRUE, 0,
+					 (sizeof(float)*LINESIZE), h_idata+GPU_OFFSET, 0, NULL, NULL);
+		check(err, "Failed to write matrix!\n");
+	}
       }
+      if (numIterations % 2 == 0) {
+	float* tmp = h_idata;
+	h_idata = h_odata;
+	h_odata = tmp;
+      }
+
       gettimeofday(&tv2, NULL);
       float time1=((float)TIME_DIFF(tv1,tv2)) / 1000;
+      float timeCPU=((float)TIME_DIFF(tvCPU1,tvCPU2)) / 1000;
+      float timeGPU=((float)TIME_DIFF(tvGPU1,tvGPU2)) / 1000;
 
       // Read back the results from the device to verify the output
       //
-TODO ------> ICI
-      err = clEnqueueReadBuffer(queue, d_odata, CL_TRUE, LINESIZE,
-				mem_size_gpu-(sizeof(float)*LINESIZE), h_odata+GPU_OFFSET+LINESIZE, 0, NULL, NULL );  
+      if (numIterations % 2 == 1) {
+      	err = clEnqueueReadBuffer(queue, d_odata, CL_TRUE, (sizeof(float)*LINESIZE),
+				mem_size_gpu-(sizeof(float)*LINESIZE), h_odata+GPU_OFFSET+LINESIZE, 0, NULL, NULL );
+      }
+      else {
+      	err = clEnqueueReadBuffer(queue, d_idata, CL_TRUE, (sizeof(float)*LINESIZE),
+				mem_size_gpu-(sizeof(float)*LINESIZE), h_odata+GPU_OFFSET+LINESIZE, 0, NULL, NULL );
+      }
       check(err, "Failed to read output matrix! %d\n", err);
 
       /* Version cpu pour comparaison */
       float* reference = (float*) malloc(mem_size);
       for(unsigned int i = 0; i < TOTALSIZE; i++)
-	reference[i] = 0.0;
+	reference[i] = h_refdata[i];
 
       gettimeofday(&tv1,NULL);
 
-      for(int i=0;i<numIterations;++i) {
-	stencil(reference + OFFSET, h_idata + OFFSET);
+      for(int i=0;i<numIterations;i++) {
+	if (i % 2 == 1) {
+		stencil(h_refdata + OFFSET, reference + OFFSET);
+	}
+	else {
+		stencil(reference + OFFSET, h_refdata + OFFSET);
+	}
       }
+      if (numIterations % 2 == 0) {
+	float* tmp = h_refdata;
+        h_refdata = reference;
+	reference = tmp;
+      }
+
       gettimeofday(&tv2,NULL);
       float time2=((float)TIME_DIFF(tv1,tv2)) / 1000;
 
       printf("%f\t%f ms (%fGo/s)\t%f ms (%fGo/s)\n", time2/time1,
 	     time1, numIterations * 3*mem_size / time1 / 1000000,
 	     time2, numIterations * 3*mem_size / time2 / 1000000);
+#ifdef COMPUTE_TIME
+      printf("TimeGPU = %f ms, TimeCPU = %f ms ==> TimeLost = %f ms\n", timeGPU, timeCPU, timeGPU-timeCPU);
+#endif
 
       // Validate our results
       //
       unsigned int errors=0;
       printf("TOTALSIZE = %lu\n", TOTALSIZE);
+      printf("TOTALSIZE_GPU = %lu\n", TOTALSIZE_GPU);
+      printf("LINESIZE = %lu\n", LINESIZE);
       for(unsigned int i=0;i<TOTALSIZE;i++){
 	if((reference[i]-h_odata[i])/reference[i] > 1e-6) {
 	  if(errors < 10) printf("[%d] %f vs %f\n", i, h_odata[i], reference[i]);
