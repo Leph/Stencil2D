@@ -69,8 +69,8 @@ load(const char *filename) {
 #define OFFSET    (LINESIZE + 16)
 #define TOTALSIZE ( LINESIZE*( YDIM + 2*BORDER ) )
 
-//#define YDIM_GPU (4096)
-#define YDIM_GPU (2048+1024+128+64)
+//#define YDIM_GPU (0)
+#define YDIM_GPU (2048+256+32+16)
 //#define COMPUTE_TIME
 //#define YDIM_GPU (4096)
 #define YDIM_CPU (YDIM - YDIM_GPU)
@@ -89,7 +89,9 @@ void stencil(float* B, const float* A)
 
 void stencil_cpu(float* B, const float* A)
 {
+  #pragma omp parallel for
   for(int y=0; y<YDIM_CPU; y++)
+    #pragma omp parallel for
     for(int x=0; x<XDIM; x++)
       B[y*LINESIZE + x] = 0.75*A[y*LINESIZE + x] + 
 	0.25*( A[y*LINESIZE + x - 1] + A[y*LINESIZE + x + 1] +
@@ -263,7 +265,7 @@ int main(int argc, char** argv)
       local[0] = 16; // Set workgroup size
       local[1] = 4;
 
-      int numIterations = 101;
+      int numIterations = 20;
 
       gettimeofday(&tv1, NULL);
       for(int i = 0; i<numIterations; i++) // Iterations are done inside the kernel
@@ -310,21 +312,23 @@ int main(int argc, char** argv)
 #endif
 
 	//Propagation des bords
-	if (i % 2 == 0) {
-		err = clEnqueueReadBuffer(queue, d_odata, CL_TRUE, (sizeof(float)*LINESIZE),
-					(sizeof(float)*LINESIZE), h_odata+GPU_OFFSET+LINESIZE, 0, NULL, NULL );
-		check(err, "Failed to read matrix! %d\n", err);
-		err = clEnqueueWriteBuffer(queue, d_odata, CL_TRUE, 0,
-					 (sizeof(float)*LINESIZE), h_odata+GPU_OFFSET, 0, NULL, NULL);
-		check(err, "Failed to write matrix!\n");
-	}
-	else {
-		err = clEnqueueReadBuffer(queue, d_idata, CL_TRUE, (sizeof(float)*LINESIZE),
-					(sizeof(float)*LINESIZE), h_idata+GPU_OFFSET+LINESIZE, 0, NULL, NULL );
-		check(err, "Failed to read matrix! %d\n", err);
-		err = clEnqueueWriteBuffer(queue, d_idata, CL_TRUE, 0,
-					 (sizeof(float)*LINESIZE), h_idata+GPU_OFFSET, 0, NULL, NULL);
-		check(err, "Failed to write matrix!\n");
+	if (YDIM_GPU != 0 && YDIM_GPU != YDIM) {
+		if (i % 2 == 0) {
+			err = clEnqueueReadBuffer(queue, d_odata, CL_TRUE, (sizeof(float)*LINESIZE),
+						(sizeof(float)*LINESIZE), h_odata+GPU_OFFSET+LINESIZE, 0, NULL, NULL );
+			check(err, "Failed to read matrix! %d\n", err);
+			err = clEnqueueWriteBuffer(queue, d_odata, CL_TRUE, 0,
+						 (sizeof(float)*LINESIZE), h_odata+GPU_OFFSET, 0, NULL, NULL);
+			check(err, "Failed to write matrix!\n");
+		}
+		else {
+			err = clEnqueueReadBuffer(queue, d_idata, CL_TRUE, (sizeof(float)*LINESIZE),
+						(sizeof(float)*LINESIZE), h_idata+GPU_OFFSET+LINESIZE, 0, NULL, NULL );
+			check(err, "Failed to read matrix! %d\n", err);
+			err = clEnqueueWriteBuffer(queue, d_idata, CL_TRUE, 0,
+						 (sizeof(float)*LINESIZE), h_idata+GPU_OFFSET, 0, NULL, NULL);
+			check(err, "Failed to write matrix!\n");
+		}
 	}
       }
       if (numIterations % 2 == 0) {
