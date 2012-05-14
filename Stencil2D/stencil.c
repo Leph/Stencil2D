@@ -61,16 +61,29 @@ load(const char *filename) {
 	return b;
 }
 
-#define XDIM      4096
-#define YDIM      4096
+#ifndef XDIM
+	#define XDIM      4096
+#endif
+#ifndef YDIM
+	#define YDIM      4096
+#endif
 #define BORDER    1
 #define PADDING   ( 64/sizeof(float) - 2*BORDER )
 #define LINESIZE  ( XDIM + PADDING + 2*BORDER )
 #define OFFSET    (LINESIZE + 16)
 #define TOTALSIZE ( LINESIZE*( YDIM + 2*BORDER ) )
 
+#ifndef NUM_ITERATION
+	#define NUM_ITERATION 50
+#endif
+#ifndef QUIET
+	#define QUIET 1
+#endif
+
+#ifndef YDIM_GPU
+	#define YDIM_GPU (2048+256+32+16)
+#endif
 //#define YDIM_GPU (0)
-#define YDIM_GPU (2048+256+32+16)
 //#define COMPUTE_TIME
 //#define YDIM_GPU (4096)
 #define YDIM_CPU (YDIM - YDIM_GPU)
@@ -89,7 +102,7 @@ void stencil(float* B, const float* A)
 
 void stencil_cpu(float* B, const float* A)
 {
-  #pragma omp parallel for
+  #pragma omp parallel for num_threads(14)
   for(int y=0; y<YDIM_CPU; y++)
     #pragma omp parallel for
     for(int x=0; x<XDIM; x++)
@@ -167,7 +180,7 @@ int main(int argc, char** argv)
   err = clGetPlatformIDs(3, pf, &nb_platforms);
   check(err, "Failed to get platform IDs");
 
-  printf("%d OpenCL platforms detected\n", nb_platforms);
+  if (!QUIET) printf("%d OpenCL platforms detected\n", nb_platforms);
 
   // Print name & vendor for each platform
   //
@@ -182,18 +195,18 @@ int main(int argc, char** argv)
     err = clGetPlatformInfo(pf[_p], CL_PLATFORM_VENDOR, 1024, vendor, NULL);
     check(err, "Failed to get Platform Info");
 
-    printf("Platform %d: %s - %s\n", _p, name, vendor);
+    if (!QUIET) printf("Platform %d: %s - %s\n", _p, name, vendor);
 
     if(strstr(vendor, "NVIDIA")) {
       p = _p;
-      printf("Choosing platform %d\n", p);
+      if (!QUIET) printf("Choosing platform %d\n", p);
     }
   }
 
   // Get list of devices
   //
   err = clGetDeviceIDs(pf[p], device_type, MAX_DEVICES, devices, &nb_devices);
-  printf("nb devices = %d\n", nb_devices);
+  if (!QUIET) printf("nb devices = %d\n", nb_devices);
 
   // Create compute context with "device_type" devices
   //
@@ -232,7 +245,7 @@ int main(int argc, char** argv)
     err = clGetDeviceInfo(devices[dev], CL_DEVICE_NAME, 1024, name, NULL);
     check(err, "Cannot get type of device");
 
-    printf("Device %d : [%s]\n", dev, name);
+    if (!QUIET) printf("Device %d : [%s]\n", dev, name);
 
     // Create a command queue
     //
@@ -265,7 +278,7 @@ int main(int argc, char** argv)
       local[0] = 16; // Set workgroup size
       local[1] = 4;
 
-      int numIterations = 20;
+      int numIterations = NUM_ITERATION;
 
       gettimeofday(&tv1, NULL);
       for(int i = 0; i<numIterations; i++) // Iterations are done inside the kernel
@@ -378,19 +391,20 @@ int main(int argc, char** argv)
       gettimeofday(&tv2,NULL);
       float time2=((float)TIME_DIFF(tv1,tv2)) / 1000;
 
-      printf("%f\t%f ms (%fGo/s)\t%f ms (%fGo/s)\n", time2/time1,
+      if (!QUIET) printf("%f\t%f ms (%fGo/s)\t%f ms (%fGo/s)\n", time2/time1,
 	     time1, numIterations * 3*mem_size / time1 / 1000000,
 	     time2, numIterations * 3*mem_size / time2 / 1000000);
+      else printf("%f\n", time2/time1);
 #ifdef COMPUTE_TIME
-      printf("TimeGPU = %f ms, TimeCPU = %f ms ==> TimeLost = %f ms\n", timeGPU, timeCPU, timeGPU-timeCPU);
+      if (!QUIET) printf("TimeGPU = %f ms, TimeCPU = %f ms ==> TimeLost = %f ms\n", timeGPU, timeCPU, timeGPU-timeCPU);
 #endif
 
       // Validate our results
       //
       unsigned int errors=0;
-      printf("TOTALSIZE = %lu\n", TOTALSIZE);
-      printf("TOTALSIZE_GPU = %lu\n", TOTALSIZE_GPU);
-      printf("LINESIZE = %lu\n", LINESIZE);
+      if (!QUIET) printf("TOTALSIZE = %lu\n", TOTALSIZE);
+      if (!QUIET) printf("TOTALSIZE_GPU = %lu\n", TOTALSIZE_GPU);
+      if (!QUIET) printf("LINESIZE = %lu\n", LINESIZE);
       for(unsigned int i=0;i<TOTALSIZE;i++){
 	if((reference[i]-h_odata[i])/reference[i] > 1e-6) {
 	  if(errors < 10) printf("[%d] %f vs %f\n", i, h_odata[i], reference[i]);
@@ -400,7 +414,7 @@ int main(int argc, char** argv)
       if(errors)
 	fprintf(stderr,"%d erreurs !\n", errors);
       else
-	fprintf(stderr,"pas d'erreurs, cool !\n");
+	if (!QUIET) fprintf(stderr,"pas d'erreurs, cool !\n");
 
       clReleaseKernel(kernel);
 
